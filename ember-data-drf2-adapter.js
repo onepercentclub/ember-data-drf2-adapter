@@ -43,7 +43,7 @@ DS.DRF2Serializer = DS.RESTSerializer.extend({
 
         this.extractMeta(loader, type, json);
 
-        if (json['results'] || !this._isEmpty(json)) {
+        if (json['results'] || !Em.isEmpty(json)) {
             var references = [];
             var objects = json['results'] ? json['results'] : json;
 
@@ -62,18 +62,6 @@ DS.DRF2Serializer = DS.RESTSerializer.extend({
             loader.populateArray(references);
         }
     },
-
-    /**
-     * Private method for checking if an object is empty.
-     */
-    _isEmpty: function(obj) {
-        for (var prop in obj) {
-            if (obj.hasOwnProperty(prop))
-                return false;
-        }
-        return true;
-    }
-
 });
 
 
