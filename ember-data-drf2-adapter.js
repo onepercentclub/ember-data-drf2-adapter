@@ -62,6 +62,14 @@ DS.DRF2Serializer = DS.RESTSerializer.extend({
             loader.populateArray(references);
         }
     },
+
+    /**
+     * Changes from default:
+     * - Don't append '_id' to the end of the key.
+     */
+    keyForBelongsTo: function(type, name) {
+        return this.keyForAttributeName(type, name);
+    }
 });
 
 
