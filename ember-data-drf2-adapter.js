@@ -156,7 +156,7 @@ DS.DRF2Adapter = DS.RESTAdapter.extend({
             var data = JSON.parse(xhr.responseText);
             store.recordWasInvalid(record, data);
         } else {
-            // TODO: what does this do? Do we want the console log on 500 errors?
+            // TODO: what does this do? Do we want the console log?
             this._super.apply(this, arguments);
             console.error("Unhandled server error with status code: " + xhr.status);
         }
@@ -208,5 +208,4 @@ DS.DRF2Adapter = DS.RESTAdapter.extend({
         }
         return url;
     }
-
 });
