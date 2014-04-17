@@ -16,7 +16,25 @@ DS.DRF2Serializer = DS.RESTSerializer.extend({
                 return Ember.isNone(deserialized) ? null : deserialized.toJSON();
             }
         });
+        this.registerTransform('file', {
+            deserialize: function(serialized) {
+                return Ember.isNone(serialized) ? null : serialized;
+            },
+            serialize: function(deserialized) {
+                return Ember.isNone(deserialized) ? null : deserialized;
+            }
+        });
+        this.registerTransform('image', {
+            deserialize: function(serialized) {
+                return Ember.isNone(serialized) ? null : Em.A(serialized);
+            },
+            serialize: function(deserialized) {
+                return Ember.isNone(deserialized) ? null : deserialized;
+            }
+        });
     },
+
+
 
     /**
      * Changes from default:
@@ -44,24 +62,22 @@ DS.DRF2Serializer = DS.RESTSerializer.extend({
 
         this.extractMeta(loader, type, json);
 
-        if (json['results'] || !Em.isEmpty(json)) {
-            var references = [];
-            var objects = json['results'] ? json['results'] : json;
+        var references = [];
+        var objects = json['results'] ? json['results'] : json;
 
-            if (records) {
-                records = records.toArray();
-            }
-
-            for (var i = 0; i < objects.length; i++) {
-                if (records) {
-                    loader.updateId(records[i], objects[i]);
-                }
-                var reference = this.extractRecordRepresentation(loader, type, objects[i]);
-                references.push(reference);
-            }
-
-            loader.populateArray(references);
+        if (records) {
+            records = records.toArray();
         }
+
+        for (var i = 0; i < objects.length; i++) {
+            if (records) {
+                loader.updateId(records[i], objects[i]);
+            }
+            var reference = this.extractRecordRepresentation(loader, type, objects[i]);
+            references.push(reference);
+        }
+
+        loader.populateArray(references);
     },
 
     /**
@@ -84,8 +100,34 @@ DS.DRF2Serializer = DS.RESTSerializer.extend({
                 this._addAttribute(data, record, name, attribute.type);
             }
         }, this);
+    },
+
+
+
+    /**
+    Customize the serializer to also send PrimaryRelatedFields ids.
+    http://stackoverflow.com/questions/16128525/customizing-what-ember-data-sends-to-the-server
+    */
+
+    addHasMany: function(hash, record, key, relationship){
+
+        var ids = record.get(relationship.key).map(function(item){
+            return item.id;
+        });
+
+        if (relationship.key != "tags") {
+            hash[key] = ids;
+        } else {
+
+            var tags = record.get(relationship.key).map(function(item){
+                return {"id" : item.id };
+            });
+            hash[relationship.key] = tags;
+        }
     }
+
 });
+
 
 
 DS.DRF2Adapter = DS.RESTAdapter.extend({
@@ -109,53 +151,154 @@ DS.DRF2Adapter = DS.RESTAdapter.extend({
     /**
      * Changes from default:
      * - Don't embed record within 'root' in the json.
+     * - Add support for multipart/form-data form submission.
      */
     createRecord: function(store, type, record) {
-        var root = this.rootForType(type);
 
+        var root = this.rootForType(type, record);
         var data = {};
+        var adapter = this;
         data = this.serialize(record, { includeId: true });
 
-        this.ajax(this.buildURL(root), "POST", {
-            data: data,
-            context: this,
-            success: function(json) {
-                Ember.run(this, function() {
-                    this.didCreateRecord(store, type, record, json);
-                });
-            },
-            error: function(xhr) {
-                this.didError(store, type, record, xhr);
+        var hasFile = false;
+        for (key in data) {
+            if (record.get(key) instanceof File) {
+                hasFile = true;
             }
-        });
 
+        }
+        if (hasFile) {
+            var formdata = new FormData();
+            for (key in data) {
+                var dataType = typeof data[key];
+                if (data[key] !== undefined) {
+                    if (record.get(key) instanceof File) {
+                        formdata.append(key, record.get(key));
+                    } else if (Em.typeOf(data[key]) == 'array'){
+                        // Take care of nested resources
+                        formdata.append(key, JSON.stringify(data[key]));
+                    // Firefox likes to send null values as the string 'null', which
+                    // doesn't play nice with server side validation
+                    // Solution: don't send null values to the server and leave them empty
+                    } else if(dataType != 'function' && dataType != 'object') {
+                        formdata.append(key, data[key]);
+                    }
+                }
+            }
+
+            return this.ajaxFormData(this.buildURL(root), "POST", {
+                data: formdata,
+                success: function(json) {
+                    Ember.run(this, function() {
+                        adapter.didCreateRecord(store, type, record, json);
+                    });
+                },
+                // Make sure we parse any errors.
+                error: function(xhr) {
+                    adapter.didError(store, type, record, xhr);
+                }
+            });
+
+        } else {
+            // Regular json POST (i.e. not multipart/form-data POST).
+            return this.ajax(this.buildURL(root), "POST", {
+              data: data
+            }).then(function(json){
+              adapter.didCreateRecord(store, type, record, json);
+            }, function(xhr) {
+              adapter.didError(store, type, record, xhr);
+              throw xhr;
+            }).then(null, DS.rejectionHandler);
+        }
     },
 
     /**
      * Changes from default:
      * - Don't embed record within 'root' in the json.
-     * TODO: Add support for multipart/form-data form submission.
+     * - Add support for multipart/form-data form submission.
      */
     updateRecord: function(store, type, record) {
         var id = get(record, 'id');
-        var root = this.rootForType(type);
-
+        var root = this.rootForType(type, record);
+        var adapter = this;
         var data = {};
-        data = this.serialize(record);
+        data = this.serialize(record, { includeId: true });
+        var hasFile = false;
 
-        this.ajax(this.buildURL(root, id), "PUT", {
-            data: data,
-            context: this,
-            success: function(json) {
-                Ember.run(this, function() {
-                    this.didSaveRecord(store, type, record, json);
-                });
-            },
-            error: function(xhr) {
-                this.didError(store, type, record, xhr);
+        var pk_fields = [];
+
+        for (key in data) {
+            if (record.get(key) instanceof File) {
+                hasFile = true;
             }
-        });
+
+            if (key.slice(-4) == "_ids"){
+                pk_fields.push(key);
+            }
+        }
+        if (hasFile) {
+            var formdata = new FormData();
+            for (key in record) {
+                if (data[key] !== undefined) {
+                    var dataType = typeof data[key];
+                    if (record.get(key) instanceof File) {
+                        var file = record.get(key);
+                        formdata.append(key, file);
+                    } else if (Em.isArray(record.get(key))){
+                        // Take care of nested resources, e.g. tags
+                        formdata.append(key, JSON.stringify(data[key]));
+                    // Firefox likes to send null values as the string 'null', which
+                    // doesn't play nice with server side validation
+                    // Solution: don't send null values to the server and leave them empty
+                    } else if(dataType != 'function' && dataType != 'object') {
+                        formdata.append(key, data[key]);
+                    }
+                }
+            }
+            for(var i=0; i < pk_fields.length; i++) {
+                if (JSON.stringify(data[pk_fields[i]]) != "[]") {
+                    formdata.append(pk_fields[i], JSON.stringify(parseInt(data[pk_fields[i]])) );
+                }
+            }
+            return this.ajaxFormData(this.buildURL(root, id), "POST", {
+                data: formdata,
+                headers: {'X-HTTP-Method-Override': 'PUT'},
+                success: function(json) {
+                    Ember.run(this, function() {
+                        adapter.didSaveRecord(store, type, record, json);
+                    });
+                },
+                error: function(xhr) {
+                    adapter.didError(store, type, record, xhr);
+                }
+            });
+        } else {
+            return this.ajax(this.buildURL(root, id), "PUT", {
+              data: data
+            }).then(function(json){
+              adapter.didSaveRecord(store, type, record, json);
+            }, function(xhr) {
+              adapter.didError(store, type, record, xhr);
+              throw xhr;
+            }).then(null, DS.rejectionHandler);
+
+        }
     },
+
+
+    /**
+     * A custom version of the ember-data ajax() method to set the hash up correctly for doing
+     * a multipart/form-data submission with data generated by FormData.
+     */
+    ajaxFormData: function(url, type, hash) {
+        hash.url = url;
+        hash.type = type;
+        hash.processData = false;  // tell jQuery not to process the data
+        hash.contentType = false;  // tell jQuery not to set contentType
+        hash.context = this;
+
+        jQuery.ajax(hash);
+     },
 
     /**
      * Changes from default:
@@ -166,6 +309,14 @@ DS.DRF2Adapter = DS.RESTAdapter.extend({
         if (xhr.status === 400) {
             var data = JSON.parse(xhr.responseText);
             store.recordWasInvalid(record, data);
+        } else if (xhr.status === 403) {
+            var data = JSON.parse(xhr.responseText);
+            store.recordWasInvalid(record, data);
+        } else if (xhr.status === 500) {
+            // Server error! rollback transaction so the application won't break.
+            record.transitionTo('invalid');
+            // record.get('stateManager').goToState('error');
+            // record.set('errors', {server: xhr.responseText[0]})
         } else {
             // TODO: what does this do? Do we want the console log?
             this._super.apply(this, arguments);
@@ -181,7 +332,7 @@ DS.DRF2Adapter = DS.RESTAdapter.extend({
      */
     rootForType: function(type, record) {
         if (record !== undefined && record.hasOwnProperty('url')) {
-            return record.url;
+            return record.get('url');
         }
         if (type.url) {
             return type.url;
@@ -218,5 +369,132 @@ DS.DRF2Adapter = DS.RESTAdapter.extend({
             url += '/';
         }
         return url;
+    },
+
+    /**
+     * Changes from default:
+     * - Store meta data on record array
+     */
+    didFindQuery: function (store, type, payload, recordArray) {
+        var loader = DS.loaderFor(store);
+
+        loader.populateArray = function (data) {
+            recordArray.load(data);
+            recordArray.set('meta', Em.A({total: payload.count, next: payload.next, previous: payload.previous}));
+        };
+
+        get(this, 'serializer').extractMany(loader, payload, type);
+    },
+
+    /**
+        Taken from Stackoverflow to mark changed hasMany Ember relations as dirty
+    */
+    dirtyRecordsForHasManyChange: function(dirtySet, record, relationship) {
+        // FIXME: Dirty trick to keep things working for adding TaskMember / WallPostPhotos / Org documents
+        if(record.constructor.toString() == 'App.User') {
+            relationship.childReference.parent = relationship.parentReference;
+            this._dirtyTree(dirtySet, record);
+        } else {
+            this._super(dirtySet, record, relationship);
+         }
+    }
+});
+
+
+// Make sure we (de)serialize 'date' attributes the right way.
+// DRF2 expects yyy-mm-ddThh:ii:ssZ
+// Ember wants an js Date()
+DS.DRF2Adapter.registerTransform("date", {
+    deserialize: function (serialized) {
+        if (serialized == undefined) {
+            return null;
+        }
+        return new Date(serialized);
+    },
+
+    serialize: function (date) {
+        if (date == null) {
+            return null;
+        }
+        var pad = function (num) {
+            return num < 10 ? "0" + num : "" + num;
+        };
+
+        var utcYear = date.getUTCFullYear(),
+            utcMonth = date.getUTCMonth() +1,
+            utcDayOfMonth = date.getUTCDate(),
+            utcDay = date.getUTCDay(),
+            utcHours = date.getUTCHours(),
+            utcMinutes = date.getUTCMinutes(),
+            utcSeconds = date.getUTCSeconds();
+
+        return utcYear + "-" + pad(utcMonth) + "-" + pad(utcDayOfMonth) + "T" + pad(utcHours) + ":" + pad(utcMinutes) + ":" + pad(utcSeconds) + "Z";
+    }
+});
+
+/* Dates are incorrectly interpreted as DateTimes, with timezone issues.
+ * Register birthdate as a date with 'no' time and unlocalized date.
+ * This is used in accounts/models.js
+ * TODO: find cleaner approach?
+ */
+DS.DRF2Adapter.registerTransform("birthdate", {
+    deserialize: function(serialized) {
+        if (serialized == undefined) {
+            return null;
+        }
+        return new Date(serialized);
+    },
+
+    serialize: function(date) {
+        if (date == null) {
+            return null;
+        }
+        var pad = function (num) {
+            return num < 10 ? "0" + num : "" + num;
+        };
+        var Year = date.getFullYear(),
+            Month = date.getMonth() +1,
+            DayOfMonth = date.getDate();
+
+        return Year + "-" + pad(Month) + "-" + pad(DayOfMonth) + "T00:00:00Z";
+    }
+});
+
+
+DS.DRF2Adapter.registerTransform("object", {
+    deserialize: function(serialized) {
+        if(serialized == undefined){
+            return null;
+        }
+        return serialized;
+    },
+
+    serialize: function(deserialized) {
+        return Ember.isNone(deserialized) ? null : deserialized;
+    }
+});
+
+
+// Send empty string ("") if string value is null.
+
+DS.DRF2Adapter.registerTransform("string", {
+    deserialize: function(serialized) {
+      return Ember.isNone(serialized) ? null : String(serialized);
+    },
+
+    serialize: function(deserialized) {
+      return Ember.isNone(deserialized) ? "" : String(deserialized);
+    }
+});
+
+DS.DRF2Adapter.registerTransform("image", {
+    deserialize: function(serialized) {
+        return serialized;
+    },
+
+    serialize: function(deserialized) {
+        if(deserialized instanceof File) {
+            return deserialized;
+        }
     }
 });
